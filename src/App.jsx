@@ -9,6 +9,21 @@ import { describeDetection, extractSimNumber } from './utils/extractSimNumber'
 
 const HEIC_TYPES = new Set(['image/heic', 'image/heif'])
 
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (reader.result) {
+      resolve(reader.result.toString())
+    } else {
+      reject(new Error('Empty image data.'))
+    }
+  }
+  reader.onerror = () => {
+    reject(reader.error || new Error('Failed to read image data.'))
+  }
+  reader.readAsDataURL(blob)
+})
+
 function App() {
   const videoRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -131,15 +146,38 @@ function App() {
       const originalCanvas = await createCanvasFromSource(source)
       const originalPreview = originalCanvas.toDataURL('image/jpeg', 0.9)
 
-      const processedCanvas = preprocessCanvas(originalCanvas)
-      const processedPreview = processedCanvas.toDataURL('image/png')
+      const processedCanvases = preprocessCanvas(originalCanvas)
+      const bestAttempt = { simNumber: null, result: null, processed: null }
+
+      for (let index = 0; index < processedCanvases.length; index += 1) {
+        const candidate = processedCanvases[index]
+        setProcessingStatus(`Running OCR (pass ${index + 1}/${processedCanvases.length})…`)
+        const result = await recognize(candidate)
+        const simNumber = extractSimNumber(result.text)
+
+        if (simNumber) {
+          bestAttempt.simNumber = simNumber
+          bestAttempt.result = result
+          bestAttempt.processed = candidate
+          break
+        }
+
+        if (!bestAttempt.result || (result.data?.confidence || 0) > (bestAttempt.result.data?.confidence || 0)) {
+          bestAttempt.result = result
+          bestAttempt.processed = candidate
+        }
+      }
+
+      const processedPreview = bestAttempt.processed?.toDataURL('image/png')
       setLastCapture({ original: originalPreview, processed: processedPreview })
 
-      setProcessingStatus('Running OCR…')
-      const result = await recognize(processedCanvas)
-      const simNumber = extractSimNumber(result.text)
+      const finalResult = bestAttempt.result
+      const simNumber = bestAttempt.simNumber
+      if (!finalResult) {
+        throw new Error('OCR returned no result.')
+      }
 
-      setOcrDebug(`${describeDetection(result.text, simNumber)} • Confidence ${Math.round(result.confidence)}%`)
+      setOcrDebug(`${describeDetection(finalResult.text, simNumber)} • Confidence ${Math.round(finalResult.data?.confidence || 0)}%`)
 
       if (!simNumber) {
         showError('Could not find a valid SIM number. Try a closer capture with even lighting.')
@@ -148,7 +186,7 @@ function App() {
 
       const outcome = addEntry(simNumber, {
         source: meta.source || 'ocr',
-        confidence: result.confidence,
+        confidence: finalResult.data?.confidence,
         attempts: meta.attempts || 1,
       })
 
@@ -161,6 +199,22 @@ function App() {
       }
     } catch (err) {
       console.error('[sim-card-scanner] OCR failure', err)
+
+      if (meta.originalBlob && !meta.didFallback) {
+        try {
+          const dataUrl = await blobToDataUrl(meta.originalBlob)
+          await processSource(dataUrl, {
+            ...meta,
+            cleanup: undefined,
+            originalBlob: null,
+            didFallback: true,
+          })
+          return
+        } catch (fallbackError) {
+          console.error('[sim-card-scanner] Fallback decode failed', fallbackError)
+        }
+      }
+
       showError(`OCR error: ${err.message || err}`)
     } finally {
       setProcessingStatus('')
@@ -204,6 +258,14 @@ function App() {
         const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.95 })
         const convertedBlob = Array.isArray(converted) ? converted[0] : converted
         workingBlob = convertedBlob instanceof Blob ? convertedBlob : new Blob([convertedBlob], { type: 'image/jpeg' })
+        console.debug('[sim-card-scanner] HEIC conversion success', {
+          originalSize: file.size,
+          convertedSize: workingBlob.size,
+          convertedType: workingBlob.type,
+        })
+        if (!workingBlob.size) {
+          throw new Error('Converted image is empty.')
+        }
       } catch (conversionError) {
         console.error('[sim-card-scanner] HEIC conversion failed', conversionError)
         showError('Could not convert the HEIC image. Please try again or use a JPG/PNG photo.')
@@ -216,6 +278,7 @@ function App() {
     try {
       await processSource(objectUrl, {
         source: 'upload',
+        originalBlob: workingBlob,
         cleanup: () => URL.revokeObjectURL(objectUrl),
       })
     } finally {

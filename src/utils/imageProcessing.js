@@ -10,26 +10,65 @@ export function cloneCanvas(source) {
   return canvas
 }
 
+async function canvasFromBlob(blob) {
+  if (!blob || blob.size === 0) {
+    throw new Error('Image blob is empty.')
+  }
+
+  try {
+    const bitmap = await createImageBitmap(blob, { colorSpaceConversion: 'srgb' })
+    const canvas = document.createElement('canvas')
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(bitmap, 0, 0)
+    bitmap.close()
+    return canvas
+  } catch (bitmapError) {
+    return new Promise((resolve, reject) => {
+      const img = new Image()
+      const objectUrl = URL.createObjectURL(blob)
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl)
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        resolve(canvas)
+      }
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl)
+        reject(new Error('Browser could not decode the selected image.'))
+      }
+      img.src = objectUrl
+    })
+  }
+}
+
 export async function createCanvasFromSource(source) {
   if (source instanceof HTMLCanvasElement) {
     return cloneCanvas(source)
   }
 
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => {
-      const canvas = document.createElement('canvas')
-      canvas.width = img.width
-      canvas.height = img.height
-      const ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0)
-      resolve(canvas)
+  if (source instanceof Blob) {
+    return canvasFromBlob(source)
+  }
+
+  if (typeof source === 'string') {
+    try {
+      const response = await fetch(source)
+      if (!response.ok) {
+        throw new Error(`Failed to load image (${response.status})`)
+      }
+      const blob = await response.blob()
+      return canvasFromBlob(blob)
+    } catch (error) {
+      throw new Error(`Unable to decode image source: ${error.message}`)
     }
-    img.onerror = () => {
-      reject(new Error('Browser could not decode the selected image.'))
-    }
-    img.src = source
-  })
+  }
+
+  throw new Error('Unsupported image source type.')
 }
 
 export function upscaleCanvas(canvas, factor = UPSCALE_FACTOR) {
@@ -84,7 +123,7 @@ function otsuThreshold(histogram, total) {
 }
 
 function applyThreshold(canvas, threshold) {
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
   const { width, height } = canvas
   const image = ctx.getImageData(0, 0, width, height)
   const data = image.data
@@ -102,7 +141,7 @@ function applyThreshold(canvas, threshold) {
 }
 
 function toGray(canvas) {
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
   const { width, height } = canvas
   const image = ctx.getImageData(0, 0, width, height)
   const { data } = image
@@ -122,7 +161,7 @@ function toGray(canvas) {
 }
 
 function enhanceContrast(canvas) {
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
   const { width, height } = canvas
   const image = ctx.getImageData(0, 0, width, height)
   const { data } = image
@@ -152,7 +191,7 @@ function enhanceContrast(canvas) {
 }
 
 function cropVerticalByDensity(canvas) {
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
   const { width, height } = canvas
   const image = ctx.getImageData(0, 0, width, height)
   const { data } = image
@@ -186,20 +225,27 @@ function cropVerticalByDensity(canvas) {
 
 export function preprocessCanvas(initial) {
   let canvas = cloneCanvas(initial)
-  canvas = upscaleCanvas(canvas)
-  canvas = toGray(canvas)
-  canvas = enhanceContrast(canvas)
+  const processedVariants = []
 
-  const ctx = canvas.getContext('2d')
-  const { width, height } = canvas
+  const base = upscaleCanvas(canvas)
+  const grayscale = toGray(cloneCanvas(base))
+  const contrasted = enhanceContrast(cloneCanvas(grayscale))
+
+  const ctx = contrasted.getContext('2d')
+  const { width, height } = contrasted
   const image = ctx.getImageData(0, 0, width, height)
   const histogram = computeHistogram(image.data)
   const totalPixels = width * height
   const threshold = otsuThreshold(histogram, totalPixels)
 
-  canvas = applyThreshold(canvas, threshold)
-  canvas = cropVerticalByDensity(canvas)
-  return canvas
+  const thresholded = applyThreshold(cloneCanvas(contrasted), threshold)
+  processedVariants.push(cropVerticalByDensity(thresholded))
+
+  processedVariants.push(cropVerticalByDensity(contrasted))
+  processedVariants.push(cropVerticalByDensity(grayscale))
+  processedVariants.push(cropVerticalByDensity(base))
+
+  return processedVariants
 }
 
 
