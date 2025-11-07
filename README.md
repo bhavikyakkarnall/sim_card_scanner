@@ -11,6 +11,7 @@ A modern React application that captures SIM/ICCID numbers using camera-based OC
 - 📊 **Operational Dashboard**: Status widgets for OCR readiness, reader connectivity, and duplicate statistics.
 - 📥 **CSV Export**: Download curated results (`#`, number, timestamp, source, confidence) at any time.
 - ✍️ **Manual Safeguard**: Quickly add or correct numbers while preserving traceability.
+- 🖼️ **HEIC Conversion**: Upload photos straight from iOS devices—HEIC images convert to OCR-friendly JPEG automatically.
 
 ## Browser Compatibility
 
@@ -114,6 +115,7 @@ The built files will be in the `dist` directory.
 - SIM numbers persist in `localStorage`; clear via the **🗑️ Clear All** action.
 - ICCID extraction prefers 19–20 digit strings but gracefully falls back to the longest 10+ digit sequence.
 - USB reader support depends on the reader emitting plain-text ICCID data; refer to your hardware manual.
+- HEIC uploads are transcoded client-side to JPEG; large files may take a few seconds to process.
 
 ## Troubleshooting
 
@@ -123,6 +125,7 @@ The built files will be in the `dist` directory.
 - **Digits misread**: Re-capture slightly closer; make sure the ICCID is horizontal and fills at least 60% of the frame.
 - **Slow first scan**: The first OCR run loads language data; subsequent scans are faster.
 - **Production HTTPS**: Browsers require secure context (HTTPS) to access cameras outside localhost.
+- **HEIC upload stalls**: Wait for the conversion to finish, or export the photo as JPEG/PNG before retrying.
 
 ### USB Reader Issues
 - **Unsupported browser**: Switch to Chrome, Edge, or Opera – Firefox/Safari do not expose Web Serial.

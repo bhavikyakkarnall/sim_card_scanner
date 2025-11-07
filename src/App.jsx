@@ -3,10 +3,11 @@ import './App.css'
 import { useSimRegistry } from './hooks/useSimRegistry'
 import { useTesseractWorker } from './hooks/useTesseractWorker'
 import { useSerialConnection } from './hooks/useSerialConnection'
+import heic2any from 'heic2any'
 import { createCanvasFromSource, preprocessCanvas } from './utils/imageProcessing'
 import { describeDetection, extractSimNumber } from './utils/extractSimNumber'
 
-const UNSUPPORTED_IMAGE_TYPES = new Set(['image/heic', 'image/heif'])
+const HEIC_TYPES = new Set(['image/heic', 'image/heif'])
 
 function App() {
   const videoRef = useRef(null)
@@ -163,6 +164,13 @@ function App() {
       showError(`OCR error: ${err.message || err}`)
     } finally {
       setProcessingStatus('')
+      if (typeof meta.cleanup === 'function') {
+        try {
+          meta.cleanup()
+        } catch (cleanupError) {
+          console.warn('[sim-card-scanner] cleanup failed', cleanupError)
+        }
+      }
     }
   }, [ocrReady, recognize, addEntry, showError, showSuccess])
 
@@ -179,27 +187,40 @@ function App() {
     await processSource(canvas, { source: 'camera' })
   }, [processSource, showError])
 
-  const handleFileUpload = useCallback((event) => {
-    const file = event.target.files[0]
+  const handleFileUpload = useCallback(async (event) => {
+    const input = event.target
+    const fileList = input.files
+    const file = fileList && fileList[0]
     if (!file) return
     if (!file.type.startsWith('image/')) {
       showError('Please choose a valid image file.')
+      input.value = ''
       return
     }
-    if (UNSUPPORTED_IMAGE_TYPES.has(file.type)) {
-      showError('HEIC images are not supported by the browser. Please convert the photo to JPG or PNG and try again.')
-      event.target.value = ''
-      return
+
+    let workingBlob = file
+    if (HEIC_TYPES.has(file.type)) {
+      try {
+        const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.95 })
+        const convertedBlob = Array.isArray(converted) ? converted[0] : converted
+        workingBlob = convertedBlob instanceof Blob ? convertedBlob : new Blob([convertedBlob], { type: 'image/jpeg' })
+      } catch (conversionError) {
+        console.error('[sim-card-scanner] HEIC conversion failed', conversionError)
+        showError('Could not convert the HEIC image. Please try again or use a JPG/PNG photo.')
+        input.value = ''
+        return
+      }
     }
-    const reader = new FileReader()
-    reader.onload = async (e) => {
-      await processSource(e.target.result, { source: 'upload' })
+
+    const objectUrl = URL.createObjectURL(workingBlob)
+    try {
+      await processSource(objectUrl, {
+        source: 'upload',
+        cleanup: () => URL.revokeObjectURL(objectUrl),
+      })
+    } finally {
+      input.value = ''
     }
-    reader.onerror = () => {
-      showError('Failed to read the selected image file.')
-    }
-    reader.readAsDataURL(file)
-    event.target.value = ''
   }, [processSource, showError])
 
   const handleManualSubmit = useCallback(() => {
