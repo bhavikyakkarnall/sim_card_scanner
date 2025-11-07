@@ -1,16 +1,16 @@
-# SIM Card Reader
+# SIM Card Scanner
 
-A ReactJS web-based application for scanning SIM card numbers and exporting them to CSV format.
+A modern React application that captures SIM/ICCID numbers using camera-based OCR, USB serial readers, or manual entry. The latest rebuild focuses on accuracy, resilience, and operator feedback.
 
 ## Features
 
-- 📷 **Camera OCR Scanning**: Use your phone's camera to read SIM card numbers directly from the card using OCR (Optical Character Recognition)
-- 🔌 **Web Serial API Integration**: Connect to USB SIM card readers via Web Serial API (optional)
-- 📝 **Manual Entry**: Add SIM numbers manually as a fallback option
-- 📊 **Real-time Display**: View all scanned SIM numbers in a table format
-- 📥 **CSV Export**: Export all scanned SIM numbers to a CSV file
-- 🎨 **Modern UI**: Beautiful, responsive user interface optimized for mobile devices
-- ✅ **Duplicate Prevention**: Automatically prevents duplicate entries
+- 📷 **High-Fidelity Camera OCR**: Auto-upscales, thresholds (Otsu), and trims the region of interest before running multi-strategy Tesseract OCR.
+- 🔌 **USB Serial Capture**: Stream ICCID data from compatible readers through the Web Serial API with live deduplication.
+- 🧠 **Smart Deduplication & Storage**: Entries persist locally with timestamps, source metadata, and OCR confidence.
+- 👀 **Side-by-Side Previews**: Inspect both the raw frame and the processed OCR image to fine-tune technique.
+- 📊 **Operational Dashboard**: Status widgets for OCR readiness, reader connectivity, and duplicate statistics.
+- 📥 **CSV Export**: Download curated results (`#`, number, timestamp, source, confidence) at any time.
+- ✍️ **Manual Safeguard**: Quickly add or correct numbers while preserving traceability.
 
 ## Browser Compatibility
 
@@ -34,42 +34,47 @@ npm run dev
 
 ## Usage
 
-### Camera OCR Scanning (Recommended)
+### Camera OCR Workflow
 
-1. Click the "📷 Start Camera" button
-2. Grant camera permissions when prompted
-3. Position the SIM card so the number is clearly visible in the camera view
-4. Click "📸 Capture & Read" to take a photo and process it with OCR
-5. The app will extract the SIM number from the image
-6. Scanned numbers will appear in the table below
-7. Click "🛑 Stop Camera" when finished scanning
+1. Press **📷 Start Camera** and grant browser access when asked.
+2. Align the SIM so the ICCID fills most of the preview.
+3. Tap **📸 Capture & Scan** – preprocessing previews (original + processed) appear immediately.
+4. Confirm the debug chip to review detection confidence and detected digits.
+5. Successes populate the results table automatically; duplicates are skipped with an alert.
+6. Use **🛑 Stop Camera** when finished to release the device.
 
-**Tips for Best Results:**
-- Ensure good, even lighting (avoid shadows and glare)
-- Hold the SIM card steady and flat
-- Make sure the SIM number is clearly visible and in focus
-- Position the card so the text fills most of the camera view
-- The app automatically prefers the back camera on mobile devices
-- If OCR doesn't work, try adjusting lighting or repositioning the card
+**Pro tips**
+- Favor indirect daylight or diffused LED light to avoid glare.
+- Keep the card steady; brace elbows or rest the card on a contrasting surface.
+- For low-contrast prints, move slightly closer so digits fill the frame.
+- Re-capture from a slightly different angle if characters smear in the processed preview.
 
-### USB Reader Connection (Optional)
+### USB Reader Capture
 
-1. Click the "🔌 Connect USB Reader" button
-2. Select your SIM card reader device from the browser's device selection dialog
-3. The app will automatically start scanning for SIM numbers
-4. Scanned numbers will appear in the table below
+1. Launch Chromium-based browser (Chrome, Edge, Opera).
+2. Choose **🔌 Connect Reader**; select the USB device in the prompt.
+3. Incoming ICCID strings appear instantly; duplicates trigger a warning instead of duplication.
+4. Disconnect safely with **🔌 Disconnect** to release the port.
 
 ### Manual Entry
 
-1. Enter a SIM number in the manual input field
-2. Click "Add" or press Enter
-3. The number will be added to the list
+1. Type or paste the ICCID (non-digit characters are stripped automatically).
+2. Press **Enter** or **➕ Add**.
+3. The entry is logged with a `manual` source label.
 
-### Exporting to CSV
+### Exporting Results
 
-1. Scan or add SIM numbers
-2. Click the "Export to CSV" button
-3. A CSV file will be downloaded with all the scanned SIM numbers and timestamps
+1. Capture at least one entry.
+2. Use **📥 Export to CSV**.
+3. The downloaded file includes row number, SIM number, timestamp (local), capture source, and OCR confidence.
+
+## What’s New in This Rebuild
+
+- Dedicated hooks for OCR, serial connectivity, and registry management (`src/hooks`).
+- Deterministic preprocessing pipeline (`src/utils/imageProcessing.js`) with upscaling, Otsu thresholding, and density-based cropping.
+- Enhanced error/success messaging with auto-dismiss timers and operator guidance.
+- Local persistence for sessions (refresh-safe) and confidence telemetry on each entry.
+- Fully reimagined UI with status dashboard, preview grid, and responsive layouts.
 
 ## Project Structure
 
@@ -78,8 +83,15 @@ SIM Card Reader/
 ├── src/
 │   ├── App.jsx          # Main application component
 │   ├── App.css          # Application styles
+│   ├── index.css        # Global styles
 │   ├── main.jsx         # React entry point
-│   └── index.css        # Global styles
+│   ├── hooks/
+│   │   ├── useSerialConnection.js
+│   │   ├── useSimRegistry.js
+│   │   └── useTesseractWorker.js
+│   └── utils/
+│       ├── extractSimNumber.js
+│       └── imageProcessing.js
 ├── index.html           # HTML template
 ├── package.json         # Dependencies and scripts
 ├── vite.config.js       # Vite configuration
@@ -98,30 +110,23 @@ The built files will be in the `dist` directory.
 
 ## Notes
 
-- The app uses OCR (Optical Character Recognition) to read SIM numbers directly from the card
-- SIM numbers are automatically extracted from the OCR text (looks for 10+ digit numbers)
-- SIM numbers are stored with timestamps for tracking
-- The CSV export includes both the SIM number and the scan timestamp
-- Duplicate SIM numbers are automatically prevented
-- OCR works best with clear, well-lit images of the SIM card
-- If OCR doesn't work well, you can use the manual entry feature as a fallback
+- OCR runs in the browser via `tesseract.js` – first load downloads trained data, so allow ~5s on slow networks.
+- SIM numbers persist in `localStorage`; clear via the **🗑️ Clear All** action.
+- ICCID extraction prefers 19–20 digit strings but gracefully falls back to the longest 10+ digit sequence.
+- USB reader support depends on the reader emitting plain-text ICCID data; refer to your hardware manual.
 
 ## Troubleshooting
 
 ### Camera OCR Issues
-- **Camera not starting**: Make sure you've granted camera permissions in your browser settings
-- **No camera found**: Ensure your device has a working camera and it's not being used by another app
-- **OCR not reading correctly**: 
-  - Ensure good, even lighting (avoid shadows and glare)
-  - Hold the SIM card steady and make sure it's in focus
-  - Position the card so the number is clearly visible
-  - Try capturing multiple times if the first attempt doesn't work
-- **HTTPS required**: Camera access requires HTTPS in production (localhost works for development)
-- **Processing is slow**: OCR processing may take a few seconds, especially on first use
+- **Camera not starting**: Ensure permissions are granted and no other app is locking the camera.
+- **Preview too dark/bright**: Adjust lighting; the processed thumbnail should display crisp black text on white.
+- **Digits misread**: Re-capture slightly closer; make sure the ICCID is horizontal and fills at least 60% of the frame.
+- **Slow first scan**: The first OCR run loads language data; subsequent scans are faster.
+- **Production HTTPS**: Browsers require secure context (HTTPS) to access cameras outside localhost.
 
 ### USB Reader Issues
-- **Device not found**: Make sure your SIM card reader is connected and the drivers are installed
-- **Connection error**: Try disconnecting and reconnecting the device
-- **No data received**: Check that your SIM card reader is sending data in a readable format
-- **Browser compatibility**: Use Chrome, Edge, or Opera for Web Serial API support
+- **Unsupported browser**: Switch to Chrome, Edge, or Opera – Firefox/Safari do not expose Web Serial.
+- **Device not listed**: Confirm drivers are installed and the reader is not claimed by another app.
+- **Garbled data**: Verify baud rate (default 9600); adjust in `useSerialConnection` if your hardware differs.
+- **No digits detected**: Ensure the reader outputs ASCII ICCID strings without proprietary framing.
 
