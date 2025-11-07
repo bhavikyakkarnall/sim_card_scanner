@@ -37,9 +37,10 @@ function App() {
             }
           }
         })
+        // Start with more permissive settings - we'll try multiple modes
         await worker.setParameters({
-          tessedit_char_whitelist: '0123456789',
-          tessedit_pageseg_mode: '8', // Single word
+          tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
+          tessedit_pageseg_mode: '6', // Assume a single uniform block of text
           tessedit_ocr_engine_mode: '1', // Neural nets LSTM engine only
         })
         workerRef.current = worker
@@ -56,10 +57,59 @@ function App() {
     }
   }, [])
 
+  // Apply unsharp mask for sharpening
+  const applyUnsharpMask = (canvas) => {
+    const ctx = canvas.getContext('2d')
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const data = imageData.data
+    const width = canvas.width
+    const height = canvas.height
+    
+    // Create a copy for the blurred version
+    const blurred = new ImageData(width, height)
+    const blurredData = blurred.data
+    
+    // Simple box blur
+    const radius = 1
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let r = 0, g = 0, b = 0, count = 0
+        for (let dy = -radius; dy <= radius; dy++) {
+          for (let dx = -radius; dx <= radius; dx++) {
+            const px = Math.max(0, Math.min(width - 1, x + dx))
+            const py = Math.max(0, Math.min(height - 1, y + dy))
+            const idx = (py * width + px) * 4
+            r += data[idx]
+            g += data[idx + 1]
+            b += data[idx + 2]
+            count++
+          }
+        }
+        const idx = (y * width + x) * 4
+        blurredData[idx] = r / count
+        blurredData[idx + 1] = g / count
+        blurredData[idx + 2] = b / count
+        blurredData[idx + 3] = data[idx + 3]
+      }
+    }
+    
+    // Apply unsharp mask (original - blurred * amount)
+    const amount = 1.5
+    for (let i = 0; i < data.length; i += 4) {
+      const sharp = data[i] + (data[i] - blurredData[i]) * amount
+      data[i] = Math.max(0, Math.min(255, sharp))
+      data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + (data[i + 1] - blurredData[i + 1]) * amount))
+      data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + (data[i + 2] - blurredData[i + 2]) * amount))
+    }
+    
+    ctx.putImageData(imageData, 0, 0)
+    return canvas
+  }
+
   // Image preprocessing to enhance OCR accuracy (especially for non-auto-focus cameras)
   const preprocessImage = (canvas) => {
     // First, upscale the image for better OCR (helps with blurry images)
-    const upscaleFactor = 2
+    const upscaleFactor = 3 // Increased from 2 to 3 for better quality
     const upscaledCanvas = document.createElement('canvas')
     upscaledCanvas.width = canvas.width * upscaleFactor
     upscaledCanvas.height = canvas.height * upscaleFactor
@@ -83,12 +133,13 @@ function App() {
       // Convert to grayscale
       const gray = 0.299 * r + 0.587 * g + 0.114 * b
       
-      // Enhance contrast more aggressively for blurry images
+      // Adaptive contrast enhancement
       let enhanced = gray
-      if (gray < 128) {
-        enhanced = gray * 0.6 // Darken dark areas more
+      const threshold = 140 // Adjusted threshold
+      if (gray < threshold) {
+        enhanced = gray * 0.5 // Darken dark areas more
       } else {
-        enhanced = 128 + (gray - 128) * 1.4 // Brighten light areas more
+        enhanced = threshold + (gray - threshold) * 1.5 // Brighten light areas
       }
       
       // Clamp values
@@ -102,6 +153,9 @@ function App() {
 
     // Apply processed image data back
     ctx.putImageData(imageData, 0, 0)
+    
+    // Apply sharpening
+    applyUnsharpMask(upscaledCanvas)
     
     return upscaledCanvas
   }
@@ -172,8 +226,30 @@ function App() {
 
   // Extract SIM number from data string
   const extractSimNumber = (data) => {
+    if (!data || data.trim().length === 0) return null
+    
     // Clean the text - remove whitespace and common OCR errors
-    const cleaned = data.replace(/\s+/g, '').replace(/[Oo]/g, '0').replace(/[Il]/g, '1')
+    // Replace common OCR mistakes: O->0, I/l->1, S->5, Z->2, etc.
+    let cleaned = data
+      .replace(/\s+/g, '')
+      .replace(/[Oo]/g, '0')
+      .replace(/[Il|]/g, '1')
+      .replace(/[Ss]/g, '5')
+      .replace(/[Zz]/g, '2')
+      .replace(/[B]/g, '8')
+      .replace(/[G]/g, '6')
+      .replace(/[D]/g, '0')
+      .replace(/[T]/g, '7')
+      .replace(/[A]/g, '4')
+      .replace(/[E]/g, '3')
+    
+    // Remove any remaining non-digit characters except keep the longest digit sequence
+    const digitSequences = cleaned.match(/\d+/g) || []
+    
+    if (digitSequences.length === 0) return null
+    
+    // Find the longest sequence
+    const longest = digitSequences.reduce((a, b) => a.length > b.length ? a : b)
     
     // Try to find ICCID pattern (19-20 digits) - most common SIM number format
     const iccidMatch = cleaned.match(/\d{19,20}/)
@@ -193,19 +269,20 @@ function App() {
       return numberMatch[0]
     }
     
-    // If the entire cleaned string is digits and long enough
-    if (/^\d+$/.test(cleaned) && cleaned.length >= 10) {
-      return cleaned
+    // If the longest sequence is long enough, use it
+    if (longest.length >= 10) {
+      return longest
     }
     
-    // Try to find numbers separated by spaces or other characters
-    const allNumbers = cleaned.match(/\d+/g)
-    if (allNumbers) {
-      // Join all numbers and check if total length is valid
-      const joined = allNumbers.join('')
-      if (joined.length >= 10) {
-        return joined
-      }
+    // Try joining all sequences if total length is valid
+    const joined = digitSequences.join('')
+    if (joined.length >= 10) {
+      return joined
+    }
+    
+    // Last resort: return longest sequence even if < 10 digits (might be partial)
+    if (longest.length >= 5) {
+      return longest
     }
     
     return null
@@ -372,16 +449,52 @@ function App() {
       // Preprocess image for better OCR
       const enhancedCanvas = preprocessImage(processedCanvas)
 
-      // Process with OCR using the enhanced canvas
-      const { data: { text, words } } = await workerRef.current.recognize(enhancedCanvas)
-      
+      // Try multiple OCR strategies
+      let bestResult = null
+      let bestText = ''
+      const strategies = [
+        { psm: '6', whitelist: '0123456789' }, // Single block, digits only
+        { psm: '8', whitelist: '0123456789' }, // Single word, digits only
+        { psm: '7', whitelist: '0123456789' }, // Single text line, digits only
+        { psm: '6', whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' }, // Single block, all chars
+        { psm: '8', whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' }, // Single word, all chars
+      ]
+
+      for (const strategy of strategies) {
+        try {
+          await workerRef.current.setParameters({
+            tessedit_pageseg_mode: strategy.psm,
+            tessedit_char_whitelist: strategy.whitelist,
+          })
+          
+          const result = await workerRef.current.recognize(enhancedCanvas)
+          const text = result.data.text.trim()
+          
+          console.log(`OCR Strategy PSM=${strategy.psm}: "${text}"`)
+          
+          // Check if this result has a valid SIM number
+          const simNumber = extractSimNumber(text)
+          if (simNumber && simNumber.length >= 10) {
+            bestResult = simNumber
+            bestText = text
+            break // Found a good result, stop trying
+          }
+          
+          // Keep the result with most digits if no perfect match
+          if (text.length > bestText.length) {
+            bestText = text
+          }
+        } catch (err) {
+          console.error(`OCR strategy failed:`, err)
+        }
+      }
+
       // Show debug info
-      setOcrDebugText(`OCR detected: "${text}"`)
-      console.log('OCR Text:', text)
-      console.log('OCR Words:', words)
+      setOcrDebugText(`OCR detected: "${bestText}"`)
+      console.log('Best OCR Text:', bestText)
       
-      // Extract SIM number from OCR text
-      const simNumber = extractSimNumber(text)
+      // Extract SIM number from the best text
+      const simNumber = bestResult || extractSimNumber(bestText)
       
       if (simNumber) {
         const added = addSimNumber(simNumber)
