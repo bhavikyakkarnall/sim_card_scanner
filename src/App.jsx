@@ -15,10 +15,13 @@ function App() {
   const [success, setSuccess] = useState('')
   const [capturedImage, setCapturedImage] = useState(null)
   const [ocrDebugText, setOcrDebugText] = useState('')
+  const [zoomLevel, setZoomLevel] = useState(1)
+  const [maxZoom, setMaxZoom] = useState(1)
   const videoRef = useRef(null)
   const streamRef = useRef(null)
   const canvasRef = useRef(null)
   const workerRef = useRef(null)
+  const fileInputRef = useRef(null)
 
   // Check if Web Serial API is supported
   const isWebSerialSupported = 'serial' in navigator
@@ -53,10 +56,22 @@ function App() {
     }
   }, [])
 
-  // Image preprocessing to enhance OCR accuracy
+  // Image preprocessing to enhance OCR accuracy (especially for non-auto-focus cameras)
   const preprocessImage = (canvas) => {
-    const ctx = canvas.getContext('2d')
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    // First, upscale the image for better OCR (helps with blurry images)
+    const upscaleFactor = 2
+    const upscaledCanvas = document.createElement('canvas')
+    upscaledCanvas.width = canvas.width * upscaleFactor
+    upscaledCanvas.height = canvas.height * upscaleFactor
+    const upscaledCtx = upscaledCanvas.getContext('2d')
+    
+    // Use high-quality image scaling
+    upscaledCtx.imageSmoothingEnabled = true
+    upscaledCtx.imageSmoothingQuality = 'high'
+    upscaledCtx.drawImage(canvas, 0, 0, upscaledCanvas.width, upscaledCanvas.height)
+    
+    const ctx = upscaledCanvas.getContext('2d')
+    const imageData = ctx.getImageData(0, 0, upscaledCanvas.width, upscaledCanvas.height)
     const data = imageData.data
 
     // Convert to grayscale and enhance contrast
@@ -68,12 +83,12 @@ function App() {
       // Convert to grayscale
       const gray = 0.299 * r + 0.587 * g + 0.114 * b
       
-      // Enhance contrast (increase difference between light and dark)
+      // Enhance contrast more aggressively for blurry images
       let enhanced = gray
       if (gray < 128) {
-        enhanced = gray * 0.7 // Darken dark areas
+        enhanced = gray * 0.6 // Darken dark areas more
       } else {
-        enhanced = 128 + (gray - 128) * 1.3 // Brighten light areas
+        enhanced = 128 + (gray - 128) * 1.4 // Brighten light areas more
       }
       
       // Clamp values
@@ -88,7 +103,7 @@ function App() {
     // Apply processed image data back
     ctx.putImageData(imageData, 0, 0)
     
-    return canvas
+    return upscaledCanvas
   }
 
   // Connect to SIM card reader via Web Serial API
@@ -236,6 +251,7 @@ function App() {
     try {
       setError('')
       setCapturedImage(null)
+      setZoomLevel(1)
       
       // Set camera active first so video element is rendered
       setIsCameraActive(true)
@@ -243,16 +259,25 @@ function App() {
       // Small delay to ensure video element is in DOM
       await new Promise(resolve => setTimeout(resolve, 100))
       
-      // Get user media
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Get user media with zoom support
+      const constraints = {
         video: {
           facingMode: 'environment', // Prefer back camera on mobile
           width: { ideal: 1920 },
-          height: { ideal: 1080 }
+          height: { ideal: 1080 },
+          zoom: { ideal: 1, max: 8 } // Request zoom capability
         }
-      })
+      }
 
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
       streamRef.current = stream
+
+      // Get camera capabilities
+      const track = stream.getVideoTracks()[0]
+      const capabilities = track.getCapabilities()
+      if (capabilities.zoom) {
+        setMaxZoom(capabilities.zoom.max || 8)
+      }
       
       // Wait a bit more and check if video element exists
       await new Promise(resolve => setTimeout(resolve, 100))
@@ -261,7 +286,7 @@ function App() {
         videoRef.current.srcObject = stream
         videoRef.current.muted = true // Required for autoplay in some browsers
         await videoRef.current.play()
-        setSuccess('Camera started! Position the SIM card in view and click "Capture & Read"')
+        setSuccess('Camera started! Use zoom controls and position the SIM card clearly.')
         setTimeout(() => setSuccess(''), 4000)
       } else {
         throw new Error('Video element not found. Please try again.')
@@ -273,6 +298,20 @@ function App() {
         streamRef.current.getTracks().forEach(track => track.stop())
         streamRef.current = null
       }
+    }
+  }
+
+  // Adjust camera zoom
+  const adjustZoom = (newZoom) => {
+    if (!streamRef.current) return
+    
+    const track = streamRef.current.getVideoTracks()[0]
+    const capabilities = track.getCapabilities()
+    
+    if (capabilities.zoom) {
+      const clampedZoom = Math.max(1, Math.min(newZoom, capabilities.zoom.max || maxZoom))
+      track.applyConstraints({ advanced: [{ zoom: clampedZoom }] })
+      setZoomLevel(clampedZoom)
     }
   }
 
@@ -291,10 +330,10 @@ function App() {
     setTimeout(() => setSuccess(''), 3000)
   }
 
-  // Capture image and process with OCR
-  const captureAndRead = async () => {
-    if (!videoRef.current || !workerRef.current) {
-      setError('Camera or OCR not ready.')
+  // Process image with OCR (used by both camera capture and file upload)
+  const processImageWithOCR = async (imageSource) => {
+    if (!workerRef.current) {
+      setError('OCR not ready.')
       return
     }
 
@@ -303,18 +342,23 @@ function App() {
       setError('')
       setOcrDebugText('')
       
-      // Capture frame from video
-      const canvas = canvasRef.current || document.createElement('canvas')
-      const video = videoRef.current
-      
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
+      // Create canvas from image source
+      const canvas = document.createElement('canvas')
       const ctx = canvas.getContext('2d')
+      const img = new Image()
       
-      // Draw video frame
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      await new Promise((resolve, reject) => {
+        img.onload = () => {
+          canvas.width = img.width
+          canvas.height = img.height
+          ctx.drawImage(img, 0, 0)
+          resolve()
+        }
+        img.onerror = reject
+        img.src = imageSource
+      })
       
-      // Convert to image data URL for preview (show original)
+      // Convert to image data URL for preview
       const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9)
       setCapturedImage(imageDataUrl)
       
@@ -326,10 +370,10 @@ function App() {
       processedCtx.drawImage(canvas, 0, 0)
       
       // Preprocess image for better OCR
-      preprocessImage(processedCanvas)
+      const enhancedCanvas = preprocessImage(processedCanvas)
 
-      // Process with OCR using the processed canvas
-      const { data: { text, words } } = await workerRef.current.recognize(processedCanvas)
+      // Process with OCR using the enhanced canvas
+      const { data: { text, words } } = await workerRef.current.recognize(enhancedCanvas)
       
       // Show debug info
       setOcrDebugText(`OCR detected: "${text}"`)
@@ -363,6 +407,56 @@ function App() {
       setTimeout(() => setError(''), 4000)
     } finally {
       setIsProcessing(false)
+    }
+  }
+
+  // Capture image and process with OCR
+  const captureAndRead = async () => {
+    if (!videoRef.current) {
+      setError('Camera not ready.')
+      return
+    }
+
+    try {
+      // Capture frame from video
+      const canvas = canvasRef.current || document.createElement('canvas')
+      const video = videoRef.current
+      
+      canvas.width = video.videoWidth
+      canvas.height = video.videoHeight
+      const ctx = canvas.getContext('2d')
+      
+      // Draw video frame
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      
+      // Process with OCR
+      await processImageWithOCR(canvas.toDataURL('image/jpeg', 0.9))
+    } catch (err) {
+      setError(`Capture error: ${err.message}`)
+      setTimeout(() => setError(''), 4000)
+    }
+  }
+
+  // Handle file upload
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0]
+    if (!file) return
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please upload an image file.')
+      setTimeout(() => setError(''), 3000)
+      return
+    }
+
+    try {
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        await processImageWithOCR(e.target.result)
+      }
+      reader.readAsDataURL(file)
+    } catch (err) {
+      setError(`File upload error: ${err.message}`)
+      setTimeout(() => setError(''), 4000)
     }
   }
 
@@ -491,6 +585,55 @@ function App() {
                 {isProcessing && (
                   <span className="scanning-indicator">🟢 Processing OCR...</span>
                 )}
+              </div>
+              
+              {isCameraActive && maxZoom > 1 && (
+                <div className="zoom-controls">
+                  <label className="zoom-label">Zoom: {zoomLevel.toFixed(1)}x</label>
+                  <div className="zoom-buttons">
+                    <button 
+                      onClick={() => adjustZoom(zoomLevel - 0.5)} 
+                      className="btn-zoom"
+                      disabled={zoomLevel <= 1}
+                    >
+                      ➖
+                    </button>
+                    <input
+                      type="range"
+                      min="1"
+                      max={maxZoom}
+                      step="0.5"
+                      value={zoomLevel}
+                      onChange={(e) => adjustZoom(parseFloat(e.target.value))}
+                      className="zoom-slider"
+                    />
+                    <button 
+                      onClick={() => adjustZoom(zoomLevel + 0.5)} 
+                      className="btn-zoom"
+                      disabled={zoomLevel >= maxZoom}
+                    >
+                      ➕
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+              <div className="upload-section">
+                <h4>Or Upload Photo</h4>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileUpload}
+                  style={{ display: 'none' }}
+                />
+                <button 
+                  onClick={() => fileInputRef.current?.click()} 
+                  className="btn btn-secondary"
+                  disabled={isProcessing}
+                >
+                  📁 Upload Photo
+                </button>
               </div>
               
               {isCameraActive && (
