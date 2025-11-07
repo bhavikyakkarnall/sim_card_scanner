@@ -172,6 +172,12 @@ function App() {
       setError('')
       setCapturedImage(null)
       
+      // Set camera active first so video element is rendered
+      setIsCameraActive(true)
+      
+      // Small delay to ensure video element is in DOM
+      await new Promise(resolve => setTimeout(resolve, 100))
+      
       // Get user media
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -182,16 +188,26 @@ function App() {
       })
 
       streamRef.current = stream
+      
+      // Wait a bit more and check if video element exists
+      await new Promise(resolve => setTimeout(resolve, 100))
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream
+        videoRef.current.muted = true // Required for autoplay in some browsers
         await videoRef.current.play()
-        setIsCameraActive(true)
         setSuccess('Camera started! Position the SIM card in view and click "Capture & Read"')
         setTimeout(() => setSuccess(''), 4000)
+      } else {
+        throw new Error('Video element not found. Please try again.')
       }
     } catch (err) {
       setError(`Camera error: ${err.message}. Make sure you grant camera permissions.`)
       setIsCameraActive(false)
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop())
+        streamRef.current = null
+      }
     }
   }
 
@@ -394,7 +410,9 @@ function App() {
                     ref={videoRef}
                     autoPlay
                     playsInline
+                    muted
                     className="camera-preview"
+                    style={{ minHeight: '300px' }}
                   />
                   {capturedImage && (
                     <div className="captured-image-container">
