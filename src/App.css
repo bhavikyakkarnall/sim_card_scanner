@@ -95,6 +95,28 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
+.ocr-debug {
+  margin-top: 15px;
+  padding: 12px;
+  background: #f0f0f0;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+}
+
+.debug-label {
+  font-size: 0.85rem;
+  color: #666;
+  margin-bottom: 5px;
+  font-weight: 600;
+}
+
+.debug-text {
+  font-size: 0.9rem;
+  color: #333;
+  font-family: 'Courier New', monospace;
+  word-break: break-all;
+}
+
 .connection-section {
   display: flex;
   align-items: center;

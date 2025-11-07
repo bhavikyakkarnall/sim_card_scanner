@@ -14,6 +14,7 @@ function App() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [capturedImage, setCapturedImage] = useState(null)
+  const [ocrDebugText, setOcrDebugText] = useState('')
   const videoRef = useRef(null)
   const streamRef = useRef(null)
   const canvasRef = useRef(null)
@@ -26,10 +27,17 @@ function App() {
   useEffect(() => {
     const initWorker = async () => {
       try {
-        const worker = await createWorker('eng')
+        const worker = await createWorker('eng', 1, {
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              // Optional: show progress
+            }
+          }
+        })
         await worker.setParameters({
           tessedit_char_whitelist: '0123456789',
-          tessedit_pageseg_mode: '6', // Assume a single uniform block of text
+          tessedit_pageseg_mode: '8', // Single word
+          tessedit_ocr_engine_mode: '1', // Neural nets LSTM engine only
         })
         workerRef.current = worker
       } catch (err) {
@@ -44,6 +52,44 @@ function App() {
       }
     }
   }, [])
+
+  // Image preprocessing to enhance OCR accuracy
+  const preprocessImage = (canvas) => {
+    const ctx = canvas.getContext('2d')
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const data = imageData.data
+
+    // Convert to grayscale and enhance contrast
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i]
+      const g = data[i + 1]
+      const b = data[i + 2]
+      
+      // Convert to grayscale
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b
+      
+      // Enhance contrast (increase difference between light and dark)
+      let enhanced = gray
+      if (gray < 128) {
+        enhanced = gray * 0.7 // Darken dark areas
+      } else {
+        enhanced = 128 + (gray - 128) * 1.3 // Brighten light areas
+      }
+      
+      // Clamp values
+      enhanced = Math.max(0, Math.min(255, enhanced))
+      
+      data[i] = enhanced     // R
+      data[i + 1] = enhanced // G
+      data[i + 2] = enhanced // B
+      // Alpha stays the same
+    }
+
+    // Apply processed image data back
+    ctx.putImageData(imageData, 0, 0)
+    
+    return canvas
+  }
 
   // Connect to SIM card reader via Web Serial API
   const connectToReader = async () => {
@@ -111,21 +157,40 @@ function App() {
 
   // Extract SIM number from data string
   const extractSimNumber = (data) => {
-    // Try to find ICCID pattern (19-20 digits)
-    const iccidMatch = data.match(/\d{19,20}/)
+    // Clean the text - remove whitespace and common OCR errors
+    const cleaned = data.replace(/\s+/g, '').replace(/[Oo]/g, '0').replace(/[Il]/g, '1')
+    
+    // Try to find ICCID pattern (19-20 digits) - most common SIM number format
+    const iccidMatch = cleaned.match(/\d{19,20}/)
     if (iccidMatch) {
       return iccidMatch[0]
     }
     
-    // Try to find any long number sequence (10+ digits)
-    const numberMatch = data.match(/\d{10,}/)
+    // Try to find 15-20 digit numbers (common SIM number lengths)
+    const longNumberMatch = cleaned.match(/\d{15,20}/)
+    if (longNumberMatch) {
+      return longNumberMatch[0]
+    }
+    
+    // Try to find any number sequence (10+ digits) - minimum for SIM numbers
+    const numberMatch = cleaned.match(/\d{10,}/)
     if (numberMatch) {
       return numberMatch[0]
     }
     
-    // Return the data as-is if it looks like a SIM number
-    if (/^\d+$/.test(data) && data.length >= 10) {
-      return data
+    // If the entire cleaned string is digits and long enough
+    if (/^\d+$/.test(cleaned) && cleaned.length >= 10) {
+      return cleaned
+    }
+    
+    // Try to find numbers separated by spaces or other characters
+    const allNumbers = cleaned.match(/\d+/g)
+    if (allNumbers) {
+      // Join all numbers and check if total length is valid
+      const joined = allNumbers.join('')
+      if (joined.length >= 10) {
+        return joined
+      }
     }
     
     return null
@@ -236,6 +301,7 @@ function App() {
     try {
       setIsProcessing(true)
       setError('')
+      setOcrDebugText('')
       
       // Capture frame from video
       const canvas = canvasRef.current || document.createElement('canvas')
@@ -244,14 +310,31 @@ function App() {
       canvas.width = video.videoWidth
       canvas.height = video.videoHeight
       const ctx = canvas.getContext('2d')
+      
+      // Draw video frame
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
       
-      // Convert to image data URL for preview
-      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8)
+      // Convert to image data URL for preview (show original)
+      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9)
       setCapturedImage(imageDataUrl)
+      
+      // Create a copy for preprocessing (don't modify original)
+      const processedCanvas = document.createElement('canvas')
+      processedCanvas.width = canvas.width
+      processedCanvas.height = canvas.height
+      const processedCtx = processedCanvas.getContext('2d')
+      processedCtx.drawImage(canvas, 0, 0)
+      
+      // Preprocess image for better OCR
+      preprocessImage(processedCanvas)
 
-      // Process with OCR
-      const { data: { text } } = await workerRef.current.recognize(canvas)
+      // Process with OCR using the processed canvas
+      const { data: { text, words } } = await workerRef.current.recognize(processedCanvas)
+      
+      // Show debug info
+      setOcrDebugText(`OCR detected: "${text}"`)
+      console.log('OCR Text:', text)
+      console.log('OCR Words:', words)
       
       // Extract SIM number from OCR text
       const simNumber = extractSimNumber(text)
@@ -266,8 +349,14 @@ function App() {
           setTimeout(() => setError(''), 3000)
         }
       } else {
-        setError('Could not find SIM number in the image. Try again with better lighting or positioning.')
-        setTimeout(() => setError(''), 4000)
+        // Show what OCR actually detected
+        const detectedNumbers = text.match(/\d+/g) || []
+        if (detectedNumbers.length > 0) {
+          setError(`Could not extract valid SIM number. OCR detected: ${detectedNumbers.join(', ')}. Try again with better positioning.`)
+        } else {
+          setError('Could not find any numbers in the image. Ensure the SIM number is clearly visible and in focus.')
+        }
+        setTimeout(() => setError(''), 5000)
       }
     } catch (err) {
       setError(`OCR processing error: ${err.message}`)
@@ -418,6 +507,12 @@ function App() {
                     <div className="captured-image-container">
                       <p className="captured-label">Last Captured Image:</p>
                       <img src={capturedImage} alt="Captured SIM card" className="captured-image" />
+                    </div>
+                  )}
+                  {ocrDebugText && (
+                    <div className="ocr-debug">
+                      <p className="debug-label">OCR Detection:</p>
+                      <p className="debug-text">{ocrDebugText}</p>
                     </div>
                   )}
                 </div>
