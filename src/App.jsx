@@ -6,6 +6,8 @@ import { useSerialConnection } from './hooks/useSerialConnection'
 import { createCanvasFromSource, preprocessCanvas } from './utils/imageProcessing'
 import { describeDetection, extractSimNumber } from './utils/extractSimNumber'
 
+const UNSUPPORTED_IMAGE_TYPES = new Set(['image/heic', 'image/heif'])
+
 function App() {
   const videoRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -182,6 +184,11 @@ function App() {
     if (!file) return
     if (!file.type.startsWith('image/')) {
       showError('Please choose a valid image file.')
+      return
+    }
+    if (UNSUPPORTED_IMAGE_TYPES.has(file.type)) {
+      showError('HEIC images are not supported by the browser. Please convert the photo to JPG or PNG and try again.')
+      event.target.value = ''
       return
     }
     const reader = new FileReader()

@@ -25,7 +25,9 @@ export async function createCanvasFromSource(source) {
       ctx.drawImage(img, 0, 0)
       resolve(canvas)
     }
-    img.onerror = reject
+    img.onerror = () => {
+      reject(new Error('Browser could not decode the selected image.'))
+    }
     img.src = source
   })
 }
